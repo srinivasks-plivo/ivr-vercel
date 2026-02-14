@@ -1,0 +1,5 @@
+Flask>=3.0.0
+SQLAlchemy>=2.0.23
+psycopg2-binary>=2.9.9
+upstash-redis>=1.0.0
+plivo>=4.55.0
