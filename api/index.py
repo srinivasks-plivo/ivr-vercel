@@ -220,8 +220,8 @@ def seed_menus():
                 menu_id='main_menu',
                 parent_menu_id=None,
                 title='Main Menu',
-                message='Welcome. Press 1 for Sales, or Press 2 for Support.',
-                digit_actions={'1': 'sales_transfer', '2': 'support_transfer'},
+                message='Welcome to Acme Corp. Press 1 for Sales, Press 2 for Support, or Press 3 to hear your phone number.',
+                digit_actions={'1': 'sales_transfer', '2': 'support_transfer', '3': 'phone_readback'},
                 action_type='menu',
             ))
 
@@ -245,13 +245,22 @@ def seed_menus():
                 action_config={'transfer_number': config.SUPPORT_TRANSFER_NUMBER or '+1234567890'},
             ))
 
+            # Phone Number Readback
+            db.add(MenuConfiguration(
+                menu_id='phone_readback',
+                parent_menu_id='main_menu',
+                title='Phone Readback',
+                message='Your phone number is {from_number}. Thank you for calling. Goodbye.',
+                action_type='phone_readback',
+            ))
+
             # Invalid Input
             db.add(MenuConfiguration(
                 menu_id='invalid_input',
                 parent_menu_id='main_menu',
                 title='Invalid Input',
-                message='Invalid input. Press 1 for Sales, or Press 2 for Support.',
-                digit_actions={'1': 'sales_transfer', '2': 'support_transfer'},
+                message='Invalid input. Press 1 for Sales, Press 2 for Support, or Press 3 to hear your phone number.',
+                digit_actions={'1': 'sales_transfer', '2': 'support_transfer', '3': 'phone_readback'},
                 action_type='menu',
             ))
 

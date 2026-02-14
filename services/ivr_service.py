@@ -109,6 +109,14 @@ class IVRService:
                 message=next_menu.message,
             )
 
+        elif next_menu.action_type == "phone_readback":
+            # Read the caller's phone number back to them
+            from_number = session.get("from_number", "unknown")
+            # Spell out digits for clarity (e.g., "+1234" → "plus 1 2 3 4")
+            spoken_number = " ".join(c if c != "+" else "plus" for c in from_number)
+            message = f"Your phone number is {spoken_number}. Thank you for calling. Goodbye."
+            return plivo_service.generate_hangup_xml(message)
+
         elif next_menu.action_type == "hangup":
             return plivo_service.generate_hangup_xml(next_menu.message)
 

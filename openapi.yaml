@@ -282,9 +282,10 @@ paths:
       summary: Seed default IVR menus
       description: |
         Deletes existing menus and creates the default IVR menu structure:
-        - **main_menu** — Press 1 for Sales, Press 2 for Support
+        - **main_menu** — Press 1 for Sales, Press 2 for Support, Press 3 for phone readback
         - **sales_transfer** — Transfers to sales number
         - **support_transfer** — Transfers to support number
+        - **phone_readback** — Reads caller's phone number back, then hangs up
         - **invalid_input** — Replays menu options
 
         **Run once** after setup-db. Running again resets menus to defaults.
@@ -472,7 +473,7 @@ paths:
               example: |
                 <Response>
                   <GetDigits action="https://ivr-vercel.vercel.app/api/handle-input" timeout="5" numDigits="1">
-                    <Speak>Welcome. Press 1 for Sales, or Press 2 for Support.</Speak>
+                    <Speak>Welcome to Acme Corp. Press 1 for Sales, Press 2 for Support, or Press 3 to hear your phone number.</Speak>
                   </GetDigits>
                 </Response>
 
@@ -488,6 +489,7 @@ paths:
         **Digit routing (default menu):**
         - Press 1 → Transfer to Sales
         - Press 2 → Transfer to Support
+        - Press 3 → Read back caller's phone number
         - Other → Invalid input message
       operationId: handleInput
       requestBody:
@@ -523,6 +525,13 @@ paths:
                       <Dial timeout="30">
                         <Number>+1234567890</Number>
                       </Dial>
+                    </Response>
+                phone_readback:
+                  summary: Phone number readback (Press 3)
+                  value: |
+                    <Response>
+                      <Speak>Your phone number is plus 1 5 5 5 1 2 3 4 5 6 7. Thank you for calling. Goodbye.</Speak>
+                      <Hangup />
                     </Response>
                 invalid:
                   summary: Invalid digit pressed
@@ -650,7 +659,7 @@ components:
             "2": support_transfer
         action_type:
           type: string
-          enum: [menu, transfer, hangup]
+          enum: [menu, transfer, hangup, phone_readback]
           example: menu
         is_active:
           type: boolean
