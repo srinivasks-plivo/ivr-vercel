@@ -1,0 +1,753 @@
+openapi: 3.0.3
+info:
+  title: IVR System API
+  description: |
+    Interactive Voice Response system deployed on Vercel serverless functions.
+    Built with Flask, Plivo Voice API, Upstash Redis, and Neon Postgres.
+
+    ## Architecture
+    - **Vercel Serverless** — Hosts the Flask application
+    - **Upstash Redis** — Temporary call session storage (30-min TTL)
+    - **Neon Postgres** — Permanent call logs and IVR menu configuration
+    - **Plivo** — Voice API that handles phone calls via XML webhooks
+
+    ## Call Flow
+    1. Caller dials Plivo number
+    2. Plivo POSTs to `/api/answer` → returns menu XML
+    3. Caller presses digit → Plivo POSTs to `/api/handle-input`
+    4. Call ends → Plivo POSTs to `/api/hangup` → saves to database
+  version: 1.0.0
+  contact:
+    name: IVR System
+  license:
+    name: MIT
+
+servers:
+  - url: https://ivr-vercel.vercel.app
+    description: Production (Vercel)
+  - url: http://localhost:5000
+    description: Local development
+
+tags:
+  - name: General
+    description: Health check and info endpoints
+  - name: Sessions
+    description: Redis session management (Upstash)
+  - name: Database Setup
+    description: One-time database initialization
+  - name: Call Logs
+    description: Postgres call log CRUD operations
+  - name: Plivo Webhooks
+    description: Endpoints called by Plivo during phone calls (return XML)
+
+paths:
+  /:
+    get:
+      tags: [General]
+      summary: Root info page
+      description: Returns application info and list of all available endpoints.
+      operationId: getRoot
+      responses:
+        "200":
+          description: Application info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  app:
+                    type: string
+                    example: IVR System on Vercel
+                  status:
+                    type: string
+                    example: running
+                  endpoints:
+                    type: object
+                    additionalProperties:
+                      type: string
+
+  /api/health:
+    get:
+      tags: [General]
+      summary: Health check
+      description: Tests connectivity to Redis (Upstash) and Postgres (Neon). Returns status of each service.
+      operationId: healthCheck
+      responses:
+        "200":
+          description: All services healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: healthy
+                redis: ok
+                postgres: ok
+                timestamp: "2026-02-14T18:30:00.000000"
+        "503":
+          description: One or more services unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: unhealthy
+                redis: "error: connection refused"
+                postgres: ok
+                timestamp: "2026-02-14T18:30:00.000000"
+
+  /api/webhook-test:
+    post:
+      tags: [General]
+      summary: Echo POST data
+      description: Accepts any POST data and echoes it back. Useful for testing webhook delivery.
+      operationId: webhookTest
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+            example:
+              test_key: test_value
+              number: 42
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              additionalProperties:
+                type: string
+      responses:
+        "200":
+          description: Echoed data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookTestResponse"
+
+  /api/start-session:
+    post:
+      tags: [Sessions]
+      summary: Create a new session
+      description: Creates a new session in Redis with a 30-minute TTL. Initial step is set to "greeting".
+      operationId: startSession
+      parameters:
+        - name: caller_id
+          in: query
+          required: true
+          description: Phone number or unique caller identifier
+          schema:
+            type: string
+          example: "+1234567890"
+      responses:
+        "200":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Session created
+                  session:
+                    $ref: "#/components/schemas/SimpleSession"
+                  ttl_seconds:
+                    type: integer
+                    example: 1800
+        "400":
+          description: Missing caller_id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: caller_id query parameter required
+
+  /api/get-session:
+    get:
+      tags: [Sessions]
+      summary: Get session by caller ID
+      description: Retrieves an existing session from Redis. Returns 404 if session has expired or doesn't exist.
+      operationId: getSession
+      parameters:
+        - name: caller_id
+          in: query
+          required: true
+          description: Phone number or unique caller identifier
+          schema:
+            type: string
+          example: "+1234567890"
+      responses:
+        "200":
+          description: Session found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    $ref: "#/components/schemas/SimpleSession"
+        "400":
+          description: Missing caller_id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Session not found or expired
+
+  /api/update-session:
+    post:
+      tags: [Sessions]
+      summary: Update session step
+      description: Updates the step field of an existing session and adds an updated_at timestamp.
+      operationId: updateSession
+      parameters:
+        - name: caller_id
+          in: query
+          required: true
+          description: Phone number or unique caller identifier
+          schema:
+            type: string
+          example: "+1234567890"
+        - name: step
+          in: query
+          required: true
+          description: New step value
+          schema:
+            type: string
+          example: menu_selection
+      responses:
+        "200":
+          description: Session updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Session updated
+                  session:
+                    $ref: "#/components/schemas/SimpleSession"
+        "400":
+          description: Missing parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/setup-db:
+    get:
+      tags: [Database Setup]
+      summary: Create database tables
+      description: |
+        Creates all database tables (call_logs, caller_history, menu_configurations).
+        **Run once** after connecting Postgres via Vercel Storage tab.
+        Safe to run multiple times — won't drop existing data.
+      operationId: setupDb
+      responses:
+        "200":
+          description: Tables created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Table created successfully
+        "500":
+          description: Database error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/seed-menus:
+    post:
+      tags: [Database Setup]
+      summary: Seed default IVR menus
+      description: |
+        Deletes existing menus and creates the default IVR menu structure:
+        - **main_menu** — Press 1 for Sales, Press 2 for Support
+        - **sales_transfer** — Transfers to sales number
+        - **support_transfer** — Transfers to support number
+        - **invalid_input** — Replays menu options
+
+        **Run once** after setup-db. Running again resets menus to defaults.
+      operationId: seedMenus
+      responses:
+        "200":
+          description: Menus seeded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Seeded 4 menus successfully
+                  menus:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MenuConfig"
+        "500":
+          description: Database error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/log-call:
+    post:
+      tags: [Call Logs]
+      summary: Insert a call record
+      description: Manually insert a call record into the database. Useful for testing or importing historical data.
+      operationId: logCall
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogCallRequest"
+            example:
+              from_number: "+1234567890"
+              to_number: "+0987654321"
+              duration: 120
+              call_status: completed
+              menu_path: ["main_menu", "sales_transfer"]
+              user_inputs:
+                - menu_id: main_menu
+                  digit: "1"
+      responses:
+        "201":
+          description: Call logged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Call logged
+                  call:
+                    $ref: "#/components/schemas/CallLog"
+        "500":
+          description: Database error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/call-logs:
+    get:
+      tags: [Call Logs]
+      summary: List all call logs
+      description: Returns the most recent 100 call logs ordered by start time (newest first).
+      operationId: getCallLogs
+      responses:
+        "200":
+          description: List of call logs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                    example: 5
+                  logs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CallLog"
+        "500":
+          description: Database error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/call-history/{phone}:
+    get:
+      tags: [Call Logs]
+      summary: Call history for a phone number
+      description: |
+        Returns all call logs where the caller's number matches the given phone.
+        The `+` prefix is added automatically if omitted.
+      operationId: getCallHistory
+      parameters:
+        - name: phone
+          in: path
+          required: true
+          description: Phone number (with or without + prefix)
+          schema:
+            type: string
+          examples:
+            with_plus:
+              summary: With + prefix
+              value: "+1234567890"
+            without_plus:
+              summary: Without + prefix (auto-added)
+              value: "1234567890"
+      responses:
+        "200":
+          description: Call history for the number
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  phone:
+                    type: string
+                    example: "+1234567890"
+                  count:
+                    type: integer
+                    example: 3
+                  logs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CallLog"
+        "500":
+          description: Database error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/answer:
+    post:
+      tags: [Plivo Webhooks]
+      summary: Handle incoming call
+      description: |
+        Called by Plivo when someone dials your phone number.
+        Creates a Redis session and returns Plivo XML with the main menu.
+
+        **Configure in Plivo Console:** Phone Numbers → your number → Answer URL
+      operationId: answerCall
+      requestBody:
+        description: Form data sent by Plivo
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [CallUUID, From, To]
+              properties:
+                CallUUID:
+                  type: string
+                  description: Unique call identifier from Plivo
+                  example: 4f3a4e5c-b2d8-4a7f-9c1e-3b8f6a9d2e1c
+                From:
+                  type: string
+                  description: Caller's phone number
+                  example: "+15551234567"
+                To:
+                  type: string
+                  description: Your Plivo phone number
+                  example: "+15559876543"
+                CallStatus:
+                  type: string
+                  description: Current call status
+                  example: ringing
+      responses:
+        "200":
+          description: Plivo XML response with main menu
+          content:
+            application/xml:
+              schema:
+                type: string
+              example: |
+                <Response>
+                  <GetDigits action="https://ivr-vercel.vercel.app/api/handle-input" timeout="5" numDigits="1">
+                    <Speak>Welcome. Press 1 for Sales, or Press 2 for Support.</Speak>
+                  </GetDigits>
+                </Response>
+
+  /api/handle-input:
+    post:
+      tags: [Plivo Webhooks]
+      summary: Handle digit input
+      description: |
+        Called by Plivo when the caller presses a digit.
+        Validates the digit, determines the next action (transfer, submenu, or hangup),
+        and returns the appropriate Plivo XML.
+
+        **Digit routing (default menu):**
+        - Press 1 → Transfer to Sales
+        - Press 2 → Transfer to Support
+        - Other → Invalid input message
+      operationId: handleInput
+      requestBody:
+        description: Form data sent by Plivo
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [CallUUID, Digits]
+              properties:
+                CallUUID:
+                  type: string
+                  description: Unique call identifier
+                  example: 4f3a4e5c-b2d8-4a7f-9c1e-3b8f6a9d2e1c
+                Digits:
+                  type: string
+                  description: Digit(s) the caller pressed
+                  example: "1"
+      responses:
+        "200":
+          description: Plivo XML response (transfer, menu, or hangup)
+          content:
+            application/xml:
+              schema:
+                type: string
+              examples:
+                transfer:
+                  summary: Transfer to department
+                  value: |
+                    <Response>
+                      <Speak>Connecting you to Sales. Please hold.</Speak>
+                      <Dial timeout="30">
+                        <Number>+1234567890</Number>
+                      </Dial>
+                    </Response>
+                invalid:
+                  summary: Invalid digit pressed
+                  value: |
+                    <Response>
+                      <Speak>Invalid input. Please try again.</Speak>
+                    </Response>
+
+  /api/hangup:
+    post:
+      tags: [Plivo Webhooks]
+      summary: Handle call hangup
+      description: |
+        Called by Plivo when the call ends.
+        Saves call data to the CallLog table, updates CallerHistory,
+        and deletes the Redis session.
+      operationId: handleHangup
+      requestBody:
+        description: Form data sent by Plivo
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [CallUUID]
+              properties:
+                CallUUID:
+                  type: string
+                  description: Unique call identifier
+                  example: 4f3a4e5c-b2d8-4a7f-9c1e-3b8f6a9d2e1c
+                HangupCause:
+                  type: string
+                  description: Why the call ended
+                  example: NORMAL_CLEARING
+                Duration:
+                  type: string
+                  description: Call duration in seconds
+                  example: "120"
+                CallStatus:
+                  type: string
+                  description: Final call status
+                  example: completed
+      responses:
+        "200":
+          description: Empty response (call processed)
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+        redis:
+          type: string
+          description: Redis status ("ok" or error message)
+        postgres:
+          type: string
+          description: Postgres status ("ok" or error message)
+        timestamp:
+          type: string
+          format: date-time
+
+    WebhookTestResponse:
+      type: object
+      properties:
+        received:
+          type: boolean
+          example: true
+        method:
+          type: string
+          example: POST
+        content_type:
+          type: string
+          example: application/json
+        data:
+          type: object
+          additionalProperties: true
+        timestamp:
+          type: string
+          format: date-time
+
+    SimpleSession:
+      type: object
+      properties:
+        step:
+          type: string
+          example: greeting
+        started_at:
+          type: string
+          format: date-time
+        caller_id:
+          type: string
+          example: "+1234567890"
+        updated_at:
+          type: string
+          format: date-time
+          description: Present only after an update
+
+    MenuConfig:
+      type: object
+      properties:
+        menu_id:
+          type: string
+          example: main_menu
+        title:
+          type: string
+          example: Main Menu
+        message:
+          type: string
+          example: "Welcome. Press 1 for Sales, or Press 2 for Support."
+        max_digits:
+          type: integer
+          example: 1
+        timeout:
+          type: integer
+          example: 5
+        digit_actions:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            "1": sales_transfer
+            "2": support_transfer
+        action_type:
+          type: string
+          enum: [menu, transfer, hangup]
+          example: menu
+        is_active:
+          type: boolean
+          example: true
+
+    LogCallRequest:
+      type: object
+      properties:
+        call_uuid:
+          type: string
+          description: Unique call ID (auto-generated if omitted)
+        from_number:
+          type: string
+          example: "+1234567890"
+        to_number:
+          type: string
+          example: "+0987654321"
+        duration:
+          type: integer
+          description: Duration in seconds
+          example: 120
+        call_status:
+          type: string
+          enum: [completed, abandoned, error]
+          example: completed
+        hangup_cause:
+          type: string
+          example: NORMAL_CLEARING
+        menu_path:
+          type: array
+          items:
+            type: string
+          example: ["main_menu", "sales_transfer"]
+        user_inputs:
+          type: array
+          items:
+            type: object
+            properties:
+              menu_id:
+                type: string
+              digit:
+                type: string
+              timestamp:
+                type: string
+                format: date-time
+
+    CallLog:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        call_uuid:
+          type: string
+          example: 4f3a4e5c-b2d8-4a7f-9c1e-3b8f6a9d2e1c
+        from_number:
+          type: string
+          example: "+1234567890"
+        to_number:
+          type: string
+          example: "+0987654321"
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+          nullable: true
+        duration:
+          type: integer
+          nullable: true
+          example: 120
+        call_status:
+          type: string
+          example: completed
+        hangup_cause:
+          type: string
+          nullable: true
+          example: NORMAL_CLEARING
+        menu_path:
+          type: array
+          items:
+            type: string
+          nullable: true
+        user_inputs:
+          type: array
+          items:
+            type: object
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: Something went wrong
